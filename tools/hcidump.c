@@ -51,6 +51,7 @@
 enum {
 	PARSE,
 	READ,
+	READ_TEXT,
 	WRITE,
 	PPPDUMP,
 	AUDIO
@@ -435,6 +436,95 @@ failed:
 	exit(1);
 }
 
+static void read_text_dump(char *fileName)
+{
+	struct hcidump_hdr dh;
+	struct btsnoop_pkt dp;
+	struct pktlog_hdr ph;
+	struct frame frm;
+	int err;
+
+	FILE* file = fopen(fileName, "r"); /* should check the result */
+    char line[256];
+
+	frm.data = malloc(HCI_MAX_FRAME_SIZE);
+	if (!frm.data) {
+		perror("Can't allocate data buffer");
+		exit(1);
+	}
+
+    while (fgets(line, sizeof(line), file)) {
+
+		// Read the header type
+		uint8_t pkt_type;
+
+		// Add carriage return, new line if not there
+		int i;
+		for(i = 0; i < sizeof(line); i++) {
+			if(line[i] == '\0') {
+				if((i > 0) && (line[i-1] != '\n') && (i < (sizeof(line)-2))) {
+					line[i] = '\r';
+					line[i+1] = '\n';
+					line[i+2] = '\0';
+				}
+			}
+		}
+
+		if (line[0] == '0' && line[1] == '4') {
+			pkt_type = HCI_EVENT_PKT;
+
+			// Get the length, add the header length
+			frm.data_len = 16*(line[4] - '0') + (line[5] - '0') + 4;
+			frm.in = 1;
+
+			// Print the raw data
+        	printf("> %s", line); 
+
+		}
+		else if (line[0] == '0' && line[1] == '1') {
+			pkt_type = HCI_COMMAND_PKT;
+
+			// Get the length, add the header length
+			frm.data_len = 16*(line[6] - '0') + (line[7] - '0') + 4;
+			frm.in = 0;
+
+			// Print the raw data
+        	printf("< %s", line); 
+
+		} else { 
+			pkt_type = HCI_ACLDATA_PKT;
+		}
+
+		((uint8_t *) frm.data)[0] = pkt_type;
+
+		// Put the data into the buffer
+		int count;
+		const char* pos = &line[0];
+		unsigned char* frame_data = frm.data;
+		for(count = 0; count < frm.data_len; count++) {
+	        sscanf(pos, "%2hhx", frame_data++);
+	        pos += 2;
+	    } 
+
+		frm.ptr = frm.data;
+		frm.len = frm.data_len;
+
+		parse(&frm);
+	}
+
+done:
+	free(frm.data);
+    fclose(file);
+
+	return;
+
+failed:
+	perror("Read failed");
+	free(frm.data);
+    fclose(file);
+	exit(1);
+}
+
 static int open_file(char *file, int mode, unsigned long flags)
 {
 	unsigned char buf[BTSNOOP_HDR_SIZE];
@@ -622,6 +712,7 @@ static void usage(void)
 	"  -m, --manufacturer=compid  Default manufacturer\n"
 	"  -w, --save-dump=file       Save dump to a file\n"
 	"  -r, --read-dump=file       Read dump from a file\n"
+	"  -s, --read-text-dump=file  Read dump from a text file\n"
 	"  -t, --ts                   Display time stamps\n"
 	"  -a, --ascii                Dump data in ascii\n"
 	"  -x, --hex                  Dump data in hex\n"
@@ -677,7 +768,7 @@ int main(int argc, char *argv[])
 	uint16_t obex_port;
 
 	while ((opt = getopt_long(argc, argv,
-				"i:l:p:m:w:r:taxXRC:H:O:P:S:D:A:Yhv",
+				"i:l:p:m:w:r:s:taxXRC:H:O:P:S:D:A:Yhv",
 				main_options, NULL)) != -1) {
 		switch(opt) {
 		case 'i':
@@ -701,6 +792,11 @@ int main(int argc, char *argv[])
 
 		case 'w':
 			mode = WRITE;
+			dump_file = strdup(optarg);
+			break;
+
+		case 's':
+			mode = READ_TEXT;
 			dump_file = strdup(optarg);
 			break;
 
@@ -808,6 +904,13 @@ int main(int argc, char *argv[])
 		init_parser(flags, filter, defpsm, defcompid,
 							pppdump_fd, audio_fd);
 		read_dump(open_file(dump_file, mode, flags));
+		break;
+
+	case READ_TEXT:
+		flags |= DUMP_VERBOSE;
+		init_parser(flags, filter, defpsm, defcompid,
+							pppdump_fd, audio_fd);
+		read_text_dump(dump_file);
 		break;
 
 	case WRITE:
